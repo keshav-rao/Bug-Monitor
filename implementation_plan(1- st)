@@ -1,0 +1,377 @@
+# Intelligent Browser-Based Software Failure Forensics Platform
+
+A full-stack observability platform designed to capture, store, and analyze browser-side telemetry for forensic debugging of silent, delayed, and non-reproducible software failures.
+
+---
+
+## Overview
+
+The system acts as a **"Black Box Recorder for Web Applications"** — capturing rich structured telemetry from monitored web apps via a Chrome Extension, compressing and uploading it to a backend pipeline, and exposing it through role-based dashboards for forensic investigation.
+
+```mermaid
+flowchart LR
+    A[Browser Extension] -->|NDJSON+ZSTD| B[Ingestion API]
+    B --> C[Processing Pipeline]
+    C --> D[(ClickHouse)]
+    C --> E[(S3/R2)]
+    C --> F[(Vector Store)]
+    D --> G[Dashboard / WebSocket]
+    G --> H[Developer UI]
+    G --> I[Creator / Admin UI]
+```
+
+---
+
+## Platform Components
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Browser Extension | Chrome MV3, JS | Telemetry capture + local buffering |
+| Frontend Dashboard | Next.js 14, TailwindCSS | Role-based UI for Admin + Developer |
+| API Gateway | Node.js + Fastify | Auth, rate limiting, tenant isolation |
+| Ingestion Service | Node.js / Go | Receive + decompress + validate chunks |
+| Processing Pipeline | Node.js workers / BullMQ | Normalize, dedupe, fingerprint, enrich |
+| Timeline Engine | Node.js | Reconstruct session timelines |
+| Real-time Streaming | WebSocket / SSE | Live telemetry push to dashboards |
+| Hot Storage | ClickHouse | Fast indexed telemetry queries |
+| Warm Storage | Cloudflare R2 / S3 | Compressed ZSTD archive (6 months) |
+| Vector Store (opt.) | Qdrant / Weaviate | AI semantic search |
+
+---
+
+## Phased Implementation Plan
+
+---
+
+### Phase 1 — Core Browser Extension (Telemetry Collector)
+
+**Goal:** Install a Chrome Extension MV3 into a target site that silently captures telemetry and buffers it locally.
+
+#### `manifest.json`
+- Manifest V3
+- Permissions: `storage`, `webRequest`, `scripting`, `tabs`, `alarms`
+- Background service worker
+- Content scripts per registered domain
+
+#### `background/service-worker.js`
+- Manages upload scheduler (every 15 min via `chrome.alarms`)
+- Handles `OnIdle`, `OnLogout`, anomaly triggers for forced uploads
+- Maintains circular in-memory event buffer (max 10 MB)
+
+#### `collectors/` — Independent capture modules
+
+| Module | What it captures |
+|--------|-----------------|
+| `console-collector.js` | Overrides `console.log/warn/error/debug` |
+| `network-collector.js` | Intercepts `fetch` + `XHR` via Proxy |
+| `error-collector.js` | `window.onerror` + `unhandledrejection` |
+| `interaction-collector.js` | Clicks, scrolls, input changes, form submits |
+| `performance-collector.js` | `PerformanceObserver` — LCP, FID, CLS, TTFB |
+| `memory-collector.js` | `performance.memory` polling |
+| `storage-collector.js` | Proxies `localStorage.setItem/removeItem` + IndexedDB mutations |
+| `business-event-collector.js` | Custom SDK for devs to emit domain events |
+
+#### `pipeline/`
+
+```
+Raw Events → Event Buffer (in-memory) → Chunker (5min/10MB) →
+NDJSON Formatter → ZSTD Compressor → IndexedDB (1 week) → Upload Scheduler
+```
+
+#### `sdk/business-events.js` (injected API)
+```js
+window.__BugMonitor = {
+  track(eventName, payload, { severity, workflowId }) {}
+}
+```
+
+Allows monitored apps to emit business-critical events without exposing internals.
+
+---
+
+### Phase 2 — Backend Infrastructure
+
+**Goal:** Receive, validate, process, and store telemetry securely.
+
+#### API Gateway (Fastify)
+- **Auth**: Passkey (OPAQUE/WebAuthn) for Developers, JWT for Admin
+- **Rate Limiting**: per tenant, per session
+- **Tenant Isolation**: all queries scoped by `workspaceId`
+- **Request Validation**: zod schemas for every route
+
+#### Ingestion Service
+- `POST /v1/telemetry/upload` — accepts multipart NDJSON+ZSTD
+- Decompresses → validates schema → publishes to BullMQ queue
+- Returns upload receipt with `chunkId`
+
+#### Processing Pipeline (BullMQ workers)
+
+| Step | Description |
+|------|-------------|
+| Normalize | Timestamp standardization, schema enforcement |
+| Deduplicate | Hash-based dedup within session window |
+| Fingerprint | Group similar errors by stack trace hash |
+| PII Masking | Regex-based scrubbing of sensitive fields |
+| Enrich | GeoIP, user-agent parse, session linkage |
+| Correlate | Link network events to business events by timing |
+| Store | Write to ClickHouse (hot) + R2/S3 (warm) |
+
+#### Timeline & Anomaly Engine
+- Reconstructs per-session event timeline sorted by timestamp
+- Detects **Silent Failures**: API returned 200 but subsequent verification failed
+- Detects **Fake Success States**: UI showed "Saved" but no DB write followed
+- Detects **Workflow Breaks**: expected event sequence interrupted
+- Outputs structured incident reports with root cause hypotheses
+
+#### Real-time Streaming
+- WebSocket server (or SSE endpoint) per workspace
+- Pushes live events to Developer Dashboard
+- Alerts on anomaly detection in < 5 seconds
+
+---
+
+### Phase 3 — Dashboard Frontend (Next.js 14)
+
+**Goal:** Role-based web UI for Admin workspace management and Developer forensic investigation.
+
+#### Creator / Admin Views
+
+| View | Features |
+|------|----------|
+| Workspace Manager | Create workspaces, register websites, generate extension configs |
+| User Management | Invite developers, assign roles, revoke access |
+| Analytics Overview | Error trends, top failing APIs, affected users, usage metrics |
+| Billing & Settings | Retention config, notification preferences |
+
+#### Developer Views
+
+| View | Features |
+|------|----------|
+| Live Monitoring Dashboard | Real-time event stream, API failures, performance alerts, active sessions |
+| Session Timeline Explorer | Search by user + timestamp, full event timeline visualization, console + network view |
+| Incident Investigator | Root cause hypotheses, correlated events, workflow integrity report |
+| Bug Tracker Integration | Create/link Jira/Linear issues, auto-attach telemetry snapshot |
+
+#### Key UI Components
+- **Timeline Viewer**: Horizontal scrollable event timeline with category swimlanes
+- **Event Inspector**: Drill-down panel showing full event payload, stack trace, network response
+- **Anomaly Heatmap**: Calendar view of incident density
+- **Session Replay** (optional): DOM snapshot-based replay using `rrweb`
+
+---
+
+### Phase 4 — Authentication & Multi-Tenancy
+
+**Goal:** Secure, isolated access for all roles.
+
+#### Creator / Admin Auth
+- Email/password + 2FA (TOTP)
+- JWT access tokens, refresh token rotation
+- Workspace-scoped permissions
+
+#### Developer Auth (Passkey Flow)
+- Admin generates a scoped passkey per developer
+- Passkey grants read-only access to specific workspace telemetry
+- Passkeys are time-limited and revocable
+
+#### Tenant Isolation
+- All ClickHouse queries include `WHERE workspace_id = ?`
+- R2/S3 objects namespaced under `/{workspaceId}/`
+- No cross-tenant data leakage possible at query level
+
+---
+
+### Phase 5 — Notifications & Integrations
+
+| Integration | Trigger | Output |
+|-------------|---------|--------|
+| Email | Anomaly detected | Incident summary email |
+| Slack / Teams | API failure spike | Alert with session link |
+| Webhooks | Any incident | POST to custom endpoint |
+| Jira | Developer action | Creates issue with telemetry attached |
+| Linear | Developer action | Creates issue with telemetry attached |
+| PagerDuty | Critical anomaly | On-call alert |
+
+---
+
+### Phase 6 — AI Root Cause Analysis (Future)
+
+| Feature | Approach |
+|---------|----------|
+| Incident Clustering | Embed stack traces → cluster similar incidents |
+| Root Cause Prediction | Fine-tuned classifier on telemetry sequences |
+| Semantic Log Search | Vector search over embedded event descriptions |
+| Failure Summaries | LLM-generated plain-English incident reports |
+
+---
+
+## Data Models
+
+### Event (ClickHouse table)
+```sql
+CREATE TABLE events (
+  workspace_id     UUID,
+  session_id       UUID,
+  user_id          String,
+  event_id         UUID,
+  event_type       LowCardinality(String),  -- console|network|error|interaction|business
+  timestamp        DateTime64(3, 'UTC'),
+  sequence_num     UInt64,
+  payload          String,   -- JSON
+  severity         LowCardinality(String),  -- info|warn|error|critical
+  workflow_id      Nullable(String),
+  fingerprint      Nullable(String),
+  ingested_at      DateTime DEFAULT now()
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (workspace_id, session_id, timestamp);
+```
+
+### Session (ClickHouse table)
+```sql
+CREATE TABLE sessions (
+  workspace_id   UUID,
+  session_id     UUID,
+  user_id        String,
+  started_at     DateTime64(3, 'UTC'),
+  ended_at       Nullable(DateTime64(3, 'UTC')),
+  url_origin     String,
+  user_agent     String,
+  incident_count UInt32,
+  has_anomaly    UInt8
+) ENGINE = MergeTree()
+ORDER BY (workspace_id, started_at);
+```
+
+---
+
+## Project Folder Structure
+
+```
+bug-monitor/
+├── extension/                  # Chrome Extension MV3
+│   ├── manifest.json
+│   ├── background/
+│   │   └── service-worker.js
+│   ├── collectors/
+│   │   ├── console-collector.js
+│   │   ├── network-collector.js
+│   │   ├── error-collector.js
+│   │   ├── interaction-collector.js
+│   │   ├── performance-collector.js
+│   │   ├── memory-collector.js
+│   │   ├── storage-collector.js
+│   │   └── business-event-collector.js
+│   ├── pipeline/
+│   │   ├── buffer.js
+│   │   ├── chunker.js
+│   │   ├── formatter.js
+│   │   ├── compressor.js        # ZSTD via WASM
+│   │   └── uploader.js
+│   ├── storage/
+│   │   └── indexeddb.js
+│   └── sdk/
+│       └── business-events.js
+│
+├── backend/
+│   ├── gateway/                # Fastify API Gateway
+│   │   ├── routes/
+│   │   ├── middleware/
+│   │   └── server.js
+│   ├── ingestion/              # Telemetry upload handler
+│   │   └── handler.js
+│   ├── workers/                # BullMQ processing workers
+│   │   ├── normalize.js
+│   │   ├── deduplicate.js
+│   │   ├── fingerprint.js
+│   │   ├── pii-masker.js
+│   │   └── enricher.js
+│   ├── timeline/               # Timeline & anomaly engine
+│   │   ├── builder.js
+│   │   └── anomaly-detector.js
+│   ├── streaming/              # WebSocket / SSE server
+│   │   └── server.js
+│   └── db/
+│       ├── clickhouse.js
+│       └── migrations/
+│
+├── dashboard/                  # Next.js 14 frontend
+│   ├── app/
+│   │   ├── (admin)/
+│   │   │   ├── workspaces/
+│   │   │   ├── users/
+│   │   │   └── analytics/
+│   │   └── (developer)/
+│   │       ├── live/
+│   │       ├── sessions/
+│   │       ├── incidents/
+│   │       └── integrations/
+│   ├── components/
+│   │   ├── timeline/
+│   │   ├── event-inspector/
+│   │   ├── anomaly-heatmap/
+│   │   └── live-stream/
+│   └── lib/
+│       ├── api.ts
+│       └── auth.ts
+│
+├── infra/                      # Docker Compose + IaC
+│   ├── docker-compose.yml
+│   ├── clickhouse/
+│   └── redis/
+│
+└── docs/
+    ├── architecture.md
+    └── sdk-integration.md
+```
+
+---
+
+## Build Sequence (Recommended Execution Order)
+
+```
+Phase 1 → Extension (Collectors + Pipeline + Local Storage)
+Phase 2a → Backend Ingestion + ClickHouse Schema
+Phase 2b → Processing Workers + Timeline Engine
+Phase 3a → Dashboard Auth + Admin Views
+Phase 3b → Developer Views (Live + Timeline + Incident)
+Phase 4 → Notification Integrations
+Phase 5 → Real-time WebSocket Streaming
+Phase 6 → AI features (post-MVP)
+```
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> **Where do you want to start building?**
+> Recommended: Start with the **Browser Extension** (Phase 1) — it is the data source for everything else and can be built and tested independently with mock uploads.
+
+> [!IMPORTANT]
+> **Hosting preference for the backend?**
+> Options: Self-hosted Docker Compose (fastest to start), Railway/Render (managed), or full cloud (AWS/GCP/Cloudflare Workers).
+
+> [!IMPORTANT]
+> **ZSTD compression in the extension?**
+> Requires a WASM build of `zstd`. Alternative: use browser-native `CompressionStream` (gzip/deflate) for MVP, migrate to ZSTD later. Which do you prefer?
+
+> [!NOTE]
+> **Session Replay** (DOM snapshot-based using `rrweb`) is a high-value optional feature. Should this be included in MVP scope?
+
+> [!NOTE]
+> **AI features** (Phase 6) require vector embeddings and an LLM integration. These are explicitly post-MVP, but should the vector store schema be designed now to support it later?
+
+---
+
+## Verification Plan
+
+| Phase | Verification Method |
+|-------|-------------------|
+| Extension collectors | Test page with all event types, verify IndexedDB contents |
+| Upload pipeline | Mock backend receiving NDJSON chunks, check decompression |
+| Ingestion service | Postman/curl upload test, verify ClickHouse row insertion |
+| Timeline engine | Replay a known session, verify reconstruction accuracy |
+| Anomaly detection | Inject a fake-success scenario, verify incident creation |
+| Dashboard | Browser E2E tests (Playwright), live session walkthrough |
+| Auth | Role-based access control test matrix |

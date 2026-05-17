@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bug Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="#818cf8" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </div>
+      <div class="header-title">
+        <span class="brand">Bug Monitor</span>
+        <span class="version">v1.0.0</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <div id="statusDot" class="status-dot active" title="Monitoring Active"></div>
+      <button id="toggleBtn" class="toggle-btn" title="Toggle Monitoring">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" id="toggleIcon">
+          <path d="M18.36 6.64a9 9 0 1 1-12.73 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          <line x1="12" y1="2" x2="12" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Current Site Banner -->
+  <div class="site-banner" id="siteBanner">
+    <div class="site-status" id="siteStatus">
+      <div class="site-indicator" id="siteIndicator"></div>
+      <span id="siteOrigin" class="site-origin">Detecting...</span>
+    </div>
+    <span id="siteLabel" class="site-label">Checking registration...</span>
+  </div>
+
+  <!-- Anomaly Alert (hidden by default) -->
+  <div class="anomaly-alert" id="anomalyAlert" style="display:none">
+    <div class="anomaly-icon">⚡</div>
+    <div class="anomaly-text">
+      <strong>Anomaly Detected</strong>
+      <span id="anomalyMsg">Error spike in last 60s</span>
+    </div>
+  </div>
+
+  <!-- Stats Grid -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-value" id="statEvents">—</div>
+      <div class="stat-label">Total Events</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statSessions">—</div>
+      <div class="stat-label">Sessions</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statBuffer">—</div>
+      <div class="stat-label">In Buffer</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statUpload">—</div>
+      <div class="stat-label">Last Upload</div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="live" id="tabLive">Live Feed</button>
+    <button class="tab" data-tab="sessions" id="tabSessions">Sessions</button>
+    <button class="tab" data-tab="config" id="tabConfig">Config</button>
+  </div>
+
+  <!-- Tab: Live Feed -->
+  <div class="tab-panel active" id="panelLive">
+    <div class="live-controls">
+      <div class="filter-row">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="console">Console</button>
+        <button class="filter-btn" data-filter="network">Network</button>
+        <button class="filter-btn" data-filter="error">Errors</button>
+        <button class="filter-btn" data-filter="interaction">Actions</button>
+        <button class="filter-btn" data-filter="performance">Performance</button>
+        <button class="filter-btn" data-filter="security">Security</button>
+        <button class="filter-btn" data-filter="application">Application</button>
+        <button class="filter-btn" data-filter="memory">Memory</button>
+        <button class="filter-btn" data-filter="storage">Storage</button>
+      </div>
+    </div>
+    <div class="event-feed" id="eventFeed">
+      <div class="empty-state">
+        <div class="empty-icon">📡</div>
+        <div class="empty-text">Listening for events…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab: Sessions -->
+  <div class="tab-panel" id="panelSessions">
+    <div class="sessions-list" id="sessionsList">
+      <div class="empty-state">
+        <div class="empty-icon">🔍</div>
+        <div class="empty-text">No sessions captured yet</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab: Config -->
+  <div class="tab-panel" id="panelConfig">
+    <div class="config-section">
+      <label class="config-label">Upload Endpoint</label>
+      <input class="config-input" id="cfgEndpoint" type="url"
+        placeholder="https://your-backend.com/v1/telemetry/upload" />
+    </div>
+
+    <div class="config-section">
+      <div class="config-section">
+        <label class="config-label">Forensic API Keys</label>
+        <textarea class="config-input config-textarea" id="cfgApiKeys"
+          placeholder="Paste API Keys here...&#10;One key per line"></textarea>
+        <div class="config-hint">The extension will securely fetch and lock monitoring to the exact sites associated
+          with these keys.</div>
+      </div>
+
+      <div class="config-section">
+        <label class="config-label">Upload Interval</label>
+        <div class="config-row">
+          <input class="config-input config-small" id="cfgInterval" type="number" min="1" max="60" value="15" />
+          <span class="config-unit">minutes</span>
+        </div>
+      </div>
+
+      <div class="config-toggles">
+        <div class="config-toggle-row">
+          <span>Capture Network Bodies</span>
+          <label class="switch"><input type="checkbox" id="cfgNetworkBodies" checked /><span
+              class="slider"></span></label>
+        </div>
+        <div class="config-toggle-row">
+          <span>Capture Interactions</span>
+          <label class="switch"><input type="checkbox" id="cfgInteractions" checked /><span
+              class="slider"></span></label>
+        </div>
+        <div class="config-toggle-row">
+          <span>Capture Memory</span>
+          <label class="switch"><input type="checkbox" id="cfgMemory" checked /><span class="slider"></span></label>
+        </div>
+        <div class="config-toggle-row">
+          <span>Capture Storage</span>
+          <label class="switch"><input type="checkbox" id="cfgStorage" checked /><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <div class="config-actions">
+        <button class="btn-primary" id="saveConfigBtn">Save Config</button>
+        <button class="btn-danger" id="clearDataBtn">Clear All Data</button>
+      </div>
+      <div class="config-feedback" id="configFeedback"></div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <button class="footer-btn" id="uploadNowBtn" title="Force upload now">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" />
+          <polyline points="17 8 12 3 7 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" />
+          <line x1="12" y1="3" x2="12" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        Upload Now
+      </button>
+      <button class="footer-btn" id="downloadBtn" title="Download full report as .txt">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" />
+          <polyline points="7 10 12 15 17 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" />
+          <line x1="12" y1="15" x2="12" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        Download
+      </button>
+      <div class="footer-sep"></div>
+      <span class="footer-info" id="footerInfo">Idle</span>
+    </footer>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>

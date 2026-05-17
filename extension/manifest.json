@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "Bug Monitor — Failure Forensics",
+  "short_name": "Bug Monitor",
+  "version": "1.0.0",
+  "description": "Silent telemetry recorder for forensic debugging of web applications. Captures console, network, errors, interactions, performance, memory, storage, and source events.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "webNavigation",
+    "webRequest",
+    "downloads",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/main-collector.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Bug Monitor"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sdk/business-events.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
