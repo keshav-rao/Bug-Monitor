@@ -43,6 +43,7 @@ export default function EventQueryLog() {
           const data = await res.json();
           setEvents(data.list || []);
           setTotal(data.total || 0);
+          setErrorMsg('');
         } else {
           setErrorMsg('Failed to query logs database. Check session token.');
         }
@@ -53,9 +54,18 @@ export default function EventQueryLog() {
       }
     }
 
-    const timer = setTimeout(fetchEvents, 300); // 300ms debounce
-    return () => clearTimeout(timer);
-  }, [type, origin, search, since, until, page]);
+    // Debounce filter changes
+    const timer = setTimeout(fetchEvents, 300);
+    
+    // Set up interval for live updates (refresh every second without debounce)
+    const interval = setInterval(fetchEvents, 1000);
+    
+    // Cleanup both timeout and interval
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
+  }, [type, origin, search, since, until, page, authContext?.token, authContext?.activeDomain]);
 
   const toggleRow = (id) => {
     setExpandedRows(prev => ({

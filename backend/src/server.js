@@ -53,15 +53,32 @@ app.post('/v1/telemetry/upload', express.raw({ type: '*/*', limit: '50mb' }), (r
   const eventCountHeader = req.headers['x-bugmonitor-events'];
   let bodyBuffer = req.body;
 
+  console.log(`[Backend API] Upload received - Encoding: ${contentEncoding}, Size: ${bodyBuffer?.length || 0} bytes, Header Events: ${eventCountHeader}`);
+
   if (!bodyBuffer || bodyBuffer.length === 0) {
+    console.error('[Backend API] Empty payload received');
     return res.status(400).json({ error: 'Empty payload' });
   }
 
   const processNDJSON = (buffer) => {
     try {
       const text = buffer.toString('utf8');
+      console.log(`[Backend API] Decompressed/Raw text length: ${text.length} characters`);
+      console.log(`[Backend API] First 500 chars of payload: ${text.substring(0, 500)}`);
+      
       const lines = text.split('\n').filter(Boolean);
-      const events = lines.map((line) => JSON.parse(line));
+      console.log(`[Backend API] Found ${lines.length} NDJSON lines`);
+      
+      const events = lines.map((line, idx) => {
+        try {
+          return JSON.parse(line);
+        } catch (e) {
+          console.error(`[Backend API] Failed to parse line ${idx}: ${e.message}`);
+          throw e;
+        }
+      });
+      
+      console.log(`[Backend API] Successfully parsed ${events.length} events`);
       
       db.saveEventsBatch(events);
       
@@ -76,12 +93,16 @@ app.post('/v1/telemetry/upload', express.raw({ type: '*/*', limit: '50mb' }), (r
   if (contentEncoding === 'gzip') {
     zlib.gunzip(bodyBuffer, (err, decompressed) => {
       if (err) {
-        console.error('[Backend API] Gzip decompression failed:', err.message);
-        return res.status(400).json({ error: 'Gzip decompression failed: ' + err.message });
+        // Body may already be decompressed by Node.js HTTP layer; try raw
+        console.log('[Backend API] Gzip decompression failed, trying raw body');
+        processNDJSON(bodyBuffer);
+      } else {
+        console.log(`[Backend API] Decompressed: ${decompressed.length} bytes -> ${decompressed.toString('utf8').length} characters`);
+        processNDJSON(decompressed);
       }
-      processNDJSON(decompressed);
     });
   } else {
+    console.log('[Backend API] No compression, processing raw buffer');
     processNDJSON(bodyBuffer);
   }
 });
@@ -227,7 +248,18 @@ app.delete('/v1/sites', requireAuth, express.json(), (req, res) => {
 
 // ─── Server Start ─────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[BugMonitor API] Server running on http://localhost:${PORT}`);
   console.log(`[BugMonitor API] Secure mode: Password login protected`);
+});
+
+server.on('error', err => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[BugMonitor API] Port ${PORT} is already in use.`);
+    console.error(`[BugMonitor API] Use a different port by setting the PORT environment variable, e.g. PORT=4001 npm run dev`);
+    process.exit(1);
+  }
+
+  console.error('[BugMonitor API] Server failed to start:', err);
+  process.exit(1);
 });

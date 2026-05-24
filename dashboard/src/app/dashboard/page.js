@@ -14,7 +14,8 @@ export default function DashboardOverview() {
   React.useEffect(() => {
     async function fetchData() {
       const auth = authContext?.token || localStorage.getItem('bug_monitor_auth');
-      const originQuery = authContext?.activeDomain ? `?origin=${encodeURIComponent(authContext.activeDomain)}` : '';
+      // Don't filter by origin by default - show all data
+      const originQuery = '';
       
       try {
         const [statsRes, errorsRes] = await Promise.all([
@@ -31,6 +32,7 @@ export default function DashboardOverview() {
           const errorsData = await errorsRes.json();
           setStats(statsData);
           setErrors(errorsData.slice(0, 5)); // top 5 errors
+          setErrorMsg('');
         } else {
           setErrorMsg('Failed to load dashboard metrics. Verify backend authentication.');
         }
@@ -40,8 +42,16 @@ export default function DashboardOverview() {
         setLoading(false);
       }
     }
+    
+    // Fetch immediately on mount
     fetchData();
-  }, []);
+    
+    // Set up interval to fetch every second for live updates
+    const interval = setInterval(fetchData, 1000);
+    
+    // Cleanup interval on unmount
+    return () => clearInterval(interval);
+  }, [authContext?.token, authContext?.activeDomain]);
 
   if (loading) {
     return <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)' }}>Loading Forensics overview...</div>;

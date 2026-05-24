@@ -376,7 +376,11 @@ function renderSessions(sessions) {
 async function loadConfig() {
   const stats = await sendToSW('GET_STATS');
   const cfg = stats?.config || {};
-  ui.cfgEndpoint.value      = cfg.uploadEndpoint || '';
+  
+  // Show the endpoint with default fallback
+  const endpoint = cfg.uploadEndpoint || 'http://localhost:4000/v1/telemetry/upload';
+  ui.cfgEndpoint.value = endpoint;
+  
   ui.cfgApiKeys.value       = (cfg.apiKeys || []).join('\n');
   ui.cfgInterval.value      = cfg.uploadIntervalMin || 15;
   ui.cfgNetworkBodies.checked = cfg.captureNetworkBodies !== false;
@@ -393,11 +397,12 @@ async function saveConfig() {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Use default endpoint if none provided
+  const endpoint = ui.cfgEndpoint.value.trim() || 'http://localhost:4000/v1/telemetry/upload';
+  const verifyUrl = endpoint.replace('/telemetry/upload', '/sites/verify');
+  
   let validOrigins = [];
   try {
-    const endpoint = ui.cfgEndpoint.value.trim() || 'http://localhost:4000/v1/telemetry/upload';
-    const verifyUrl = endpoint.replace('/telemetry/upload', '/sites/verify');
-    
     if (apiKeys.length > 0) {
       const res = await fetch(verifyUrl, {
         method: 'POST',
@@ -422,7 +427,7 @@ async function saveConfig() {
   }
 
   const newConfig = {
-    uploadEndpoint:      ui.cfgEndpoint.value.trim() || null,
+    uploadEndpoint:      endpoint,
     apiKeys:             apiKeys,
     registeredOrigins:   validOrigins,
     uploadIntervalMin:   parseInt(ui.cfgInterval.value, 10) || 15,

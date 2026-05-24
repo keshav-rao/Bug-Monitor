@@ -18,9 +18,9 @@ export default function SessionsExplorer() {
       const offset = (page - 1) * 30;
       let url = `http://localhost:4000/v1/sessions?limit=30&offset=${offset}`;
       
-      const filterOrigin = search || authContext?.activeDomain;
-      if (filterOrigin) {
-        url += `&origin=${encodeURIComponent(filterOrigin)}`;
+      // Only filter by search if provided
+      if (search) {
+        url += `&origin=${encodeURIComponent(search)}`;
       }
 
       try {
@@ -31,6 +31,7 @@ export default function SessionsExplorer() {
           const data = await res.json();
           setSessions(data.list || []);
           setTotal(data.total || 0);
+          setErrorMsg('');
         } else {
           setErrorMsg('Failed to fetch session list. Unauthenticated.');
         }
@@ -42,8 +43,16 @@ export default function SessionsExplorer() {
     }
 
     const timer = setTimeout(fetchSessions, search ? 300 : 0); // Debounce searches
-    return () => clearTimeout(timer);
-  }, [search, page]);
+    
+    // Set up interval for live updates (refresh every second)
+    const interval = setInterval(fetchSessions, 1000);
+    
+    // Cleanup both timeout and interval
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
+  }, [search, page, authContext?.token, authContext?.activeDomain]);
 
   const handleRowClick = (sessionId) => {
     window.location.href = `/sessions/${sessionId}`;

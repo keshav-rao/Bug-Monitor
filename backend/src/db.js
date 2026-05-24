@@ -52,9 +52,11 @@ function readSession(sessionId) {
 function writeSession(sessionId, data) {
   const filePath = path.join(sessionsDir, `${sessionId}.json`);
   try {
+    console.log(`[DB] Writing session to: ${filePath}`);
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    console.log(`[DB] Successfully wrote session: ${sessionId} with ${data.eventCount} events`);
   } catch (err) {
-    console.error(`[DB] Failed to write session ${sessionId}:`, err.message);
+    console.error(`[DB] Failed to write session ${sessionId}: ${err.message} (Path: ${filePath})`);
   }
 }
 
@@ -127,7 +129,12 @@ function deleteSite(origin) {
  * Bulk save events and update sessions (No SQLite native locks!)
  */
 function saveEventsBatch(events) {
-  if (!Array.isArray(events) || events.length === 0) return;
+  if (!Array.isArray(events) || events.length === 0) {
+    console.log('[DB] saveEventsBatch called with empty/invalid events');
+    return;
+  }
+
+  console.log(`[DB] Processing ${events.length} events for batch save`);
 
   // Group events by sessionId
   const grouped = {};
@@ -137,8 +144,12 @@ function saveEventsBatch(events) {
     grouped[sId].push(e);
   }
 
+  console.log(`[DB] Events grouped into ${Object.keys(grouped).length} sessions:`, Object.keys(grouped));
+
   // Save each group atomically
   for (const [sessionId, eventList] of Object.entries(grouped)) {
+    console.log(`[DB] Saving ${eventList.length} events to session: ${sessionId}`);
+    
     let sessionData = readSession(sessionId);
     
     if (!sessionData) {

@@ -32,7 +32,7 @@ import {
 
 const DEFAULT_CONFIG = {
   registeredOrigins: [],        // Sites to monitor — empty = monitor all
-  uploadEndpoint: null,         // Backend upload URL
+  uploadEndpoint: 'http://localhost:4000/v1/telemetry/upload', // Default for local dev
   uploadIntervalMin: 15,        // Upload frequency in minutes
   maxBufferSize: 500,           // Max events in memory before flush to IDB
   captureNetworkBodies: true,   // Whether to capture response bodies
@@ -48,13 +48,28 @@ let inMemoryBuffer = [];        // Fast pre-IDB buffer
 let activeSessions = {};        // sessionId → { origin, startedAt, eventCount }
 let totalEventsThisSession = 0;
 let isUploading = false;
+let _liveUploadTimer = null;    // Debounce timer for live uploads
 
 // ─── Initialization ──────────────────────────────────────────────────────────
 
 async function initialize() {
   // Load saved config
   const stored = await chrome.storage.local.get(['config', 'stats']);
-  if (stored.config) config = { ...DEFAULT_CONFIG, ...stored.config };
+  if (stored.config) {
+    // Merge stored config, but don't inherit null/undefined values
+    const mergedConfig = { ...DEFAULT_CONFIG };
+    for (const [key, value] of Object.entries(stored.config)) {
+      if (value !== null && value !== undefined) {
+        mergedConfig[key] = value;
+      }
+    }
+    config = mergedConfig;
+  }
+
+  // Ensure uploadEndpoint is always set
+  if (!config.uploadEndpoint) {
+    config.uploadEndpoint = DEFAULT_CONFIG.uploadEndpoint;
+  }
 
   // Register alarms
   await chrome.alarms.clearAll();
@@ -62,7 +77,8 @@ async function initialize() {
   chrome.alarms.create('purge', { periodInMinutes: 60 });           // Hourly purge check
   chrome.alarms.create('flush_buffer', { periodInMinutes: 1 });     // Buffer → IDB flush
 
-  console.log('[BugMonitor SW] Initialized. Monitoring origins:', config.registeredOrigins.length > 0 ? config.registeredOrigins : 'ALL');
+  console.log('[BugMonitor SW] Initialized. Upload endpoint: ' + config.uploadEndpoint);
+  console.log('[BugMonitor SW] Monitoring origins:', config.registeredOrigins.length > 0 ? config.registeredOrigins : 'ALL');
 }
 
 initialize();
@@ -172,9 +188,15 @@ async function handleTelemetryEvents(events, sender) {
     anomalyDetected(events.filter((e) => e.type === 'error' || (e.type === 'network' && e.ok === false)));
   }
 
-  // Flush buffer if it's too large
-  if (inMemoryBuffer.length >= config.maxBufferSize) {
-    await flushBufferToIDB();
+  // Flush buffer to IDB immediately for persistence
+  await flushBufferToIDB();
+
+  // Trigger live upload (debounced: max once per 2s)
+  if (!_liveUploadTimer) {
+    _liveUploadTimer = setTimeout(() => {
+      _liveUploadTimer = null;
+      attemptUpload(false);
+    }, 2000);
   }
 
   return { ok: true, buffered: events.length };
@@ -216,24 +238,38 @@ async function flushBufferToIDB() {
 // ─── Upload ──────────────────────────────────────────────────────────────────
 
 async function attemptUpload(force = false) {
-  if (!config.uploadEndpoint) return { ok: false, reason: 'no_endpoint' };
-  if (isUploading && !force) return { ok: false, reason: 'already_uploading' };
+  if (!config.uploadEndpoint) {
+    console.error('[BugMonitor SW] Upload failed: no endpoint configured');
+    return { ok: false, reason: 'no_endpoint' };
+  }
+  if (isUploading && !force) {
+    console.warn('[BugMonitor SW] Upload already in progress');
+    return { ok: false, reason: 'already_uploading' };
+  }
 
   isUploading = true;
 
   try {
+    console.log(`[BugMonitor SW] Starting upload to: ${config.uploadEndpoint}`);
+    
     const events = await getPendingUploadEvents(500);
+    console.log(`[BugMonitor SW] Found ${events.length} pending events to upload`);
+    
     if (events.length === 0) {
+      console.log('[BugMonitor SW] No pending events, skipping upload');
       isUploading = false;
       return { ok: true, uploaded: 0 };
     }
 
     // Format as NDJSON
     const ndjson = events.map((e) => JSON.stringify(e)).join('\n');
+    console.log(`[BugMonitor SW] Formatted NDJSON: ${ndjson.length} bytes`);
 
     // Compress using native CompressionStream (gzip)
     const compressed = await compress(ndjson);
+    console.log(`[BugMonitor SW] Compressed to: ${compressed.byteLength} bytes`);
 
+    console.log(`[BugMonitor SW] Sending POST to: ${config.uploadEndpoint}`);
     const response = await fetch(config.uploadEndpoint, {
       method: 'POST',
       headers: {
@@ -245,20 +281,23 @@ async function attemptUpload(force = false) {
       body: compressed,
     });
 
+    console.log(`[BugMonitor SW] Response status: ${response.status}`);
+
     if (response.ok) {
       await markEventsUploaded(events.map((e) => e.id));
       await setMeta('lastUpload', Date.now());
       await setMeta('lastUploadCount', events.length);
-      console.log(`[BugMonitor SW] Uploaded ${events.length} events`);
+      console.log(`[BugMonitor SW] ✓ Successfully uploaded ${events.length} events`);
       isUploading = false;
       return { ok: true, uploaded: events.length };
     } else {
-      console.warn('[BugMonitor SW] Upload failed:', response.status);
+      const errorText = await response.text();
+      console.error(`[BugMonitor SW] Upload failed with status ${response.status}: ${errorText}`);
       isUploading = false;
-      return { ok: false, status: response.status };
+      return { ok: false, status: response.status, error: errorText };
     }
   } catch (err) {
-    console.error('[BugMonitor SW] Upload error:', err.message);
+    console.error('[BugMonitor SW] Upload error:', err.message, err.stack);
     isUploading = false;
     return { ok: false, error: err.message };
   }

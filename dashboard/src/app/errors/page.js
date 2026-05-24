@@ -14,7 +14,8 @@ export default function ErrorAnalysis() {
   React.useEffect(() => {
     async function fetchErrors() {
       const auth = authContext?.token || localStorage.getItem('bug_monitor_auth');
-      const originQuery = authContext?.activeDomain ? `?origin=${encodeURIComponent(authContext.activeDomain)}` : '';
+      // Don't filter by origin by default - show all data
+      const originQuery = '';
       
       try {
         const res = await fetch(`http://localhost:4000/v1/errors${originQuery}`, {
@@ -23,6 +24,7 @@ export default function ErrorAnalysis() {
         if (res.ok) {
           const data = await res.json();
           setErrors(data || []);
+          setErrorMsg('');
         } else {
           setErrorMsg('Failed to load error groupings. Unauthenticated.');
         }
@@ -32,8 +34,16 @@ export default function ErrorAnalysis() {
         setLoading(false);
       }
     }
+    
+    // Fetch immediately on mount
     fetchErrors();
-  }, []);
+    
+    // Set up interval to fetch every second for live updates
+    const interval = setInterval(fetchErrors, 1000);
+    
+    // Cleanup interval on unmount
+    return () => clearInterval(interval);
+  }, [authContext?.token, authContext?.activeDomain]);
 
   const toggleErrorDetails = (idx) => {
     setExpandedError(prev => (prev === idx ? null : idx));
