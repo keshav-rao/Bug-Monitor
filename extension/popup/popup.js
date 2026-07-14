@@ -180,33 +180,25 @@ function filterEvents(events, filter) {
   switch (filter) {
     case 'all':         return events;
     case 'console':     return events.filter((e) => e.type === 'console');
-    case 'error':       return events.filter((e) => e.type === 'error');
+    case 'error':       return events.filter((e) => e.type === 'error' || e.type === 'sw_error');
     case 'interaction': return events.filter((e) => e.type === 'interaction');
     case 'memory':      return events.filter((e) => e.type === 'memory');
     case 'storage':     return events.filter((e) => e.type === 'storage');
-    // Network = JS-level fetch/XHR/WS + webRequest + browser resource loads
-    case 'network':     return events.filter((e) =>
-      e.type === 'network' ||
-      (e.type === 'performance' && e.entryType === 'resource')
-    );
-    // Performance = navigation timing, paint, LCP, FID, CLS, long tasks
-    case 'performance': return events.filter((e) =>
-      e.type === 'performance' && e.entryType !== 'resource'
-    );
-    // Security = CSP violations + webRequest errors (CORS, ERR_FAILED)
+    case 'network':     return events.filter((e) => e.type === 'network');
+    case 'performance': return events.filter((e) => e.type === 'performance');
+    case 'dom':         return events.filter((e) => e.type === 'dom');
     case 'security':    return events.filter((e) =>
       (e.type === 'error' && e.subtype === 'csp_violation') ||
       (e.type === 'network' && (e.subtype === 'webRequest_error' || e.error)) ||
       (e.type === 'error' && e.subtype === 'resource_load_error')
     );
-    // Application = storage changes + script/source injection + SPA navigation
     case 'application': return events.filter((e) =>
       e.type === 'storage' ||
       e.type === 'source' ||
       e.type === 'lifecycle' ||
       e.type === 'dom'
     );
-    default: return events.filter((e) => e.type === filter);
+    default:            return events.filter((e) => e.type === filter);
   }
 }
 
@@ -214,7 +206,7 @@ function renderFeed() {
   const filtered = filterEvents(eventFeedItems, currentFilter);
   const emptyLabels = {
     network: 'No network events — visit a page with API calls',
-    error: 'No errors captured yet',
+    error: 'No errors captured yet — JS errors, network failures, and SW errors appear here',
     interaction: 'No user actions captured yet',
     security: 'No CSP violations or network errors',
     performance: 'No performance metrics yet',
@@ -242,7 +234,7 @@ function renderEventItem(e) {
   const dot  = `<div class="event-dot ${e.type || 'lifecycle'}"></div>`;
   const badge = getEventBadge(e);
   const msg   = getEventMessage(e);
-  const isErr = e.type === 'error' || (e.type === 'network' && e.ok === false);
+  const isErr = e.type === 'error' || e.type === 'sw_error' || (e.type === 'network' && e.ok === false);
   const isWarn = e.type === 'console' && e.level === 'warn';
 
   return `<div class="event-item ${isErr ? 'is-error' : ''} ${isWarn ? 'is-warn' : ''}">
@@ -282,6 +274,7 @@ function getEventBadge(e) {
     if (e.subtype === 'resource_load_error') return `<span class="event-badge badge-error">RES ERR</span>`;
     return `<span class="event-badge badge-error">${e.subtype || 'error'}</span>`;
   }
+  if (e.type === 'sw_error')    return `<span class="event-badge badge-error">SW ERR</span>`;
   if (e.type === 'storage')     return `<span class="event-badge" style="background:rgba(251,191,36,.12);color:var(--yellow)">${e.storageType?.replace('Storage', '') || 'store'}</span>`;
   if (e.type === 'source')      return `<span class="event-badge" style="background:rgba(167,139,250,.12);color:#a78bfa">${e.action || 'src'}</span>`;
   if (e.type === 'lifecycle')   return `<span class="event-badge" style="background:rgba(156,163,175,.1);color:var(--text-muted)">${e.action || 'lifecycle'}</span>`;
@@ -324,6 +317,8 @@ function getEventMessage(e) {
       if (e.subtype === 'resource_load_error') return `Failed to load <${e.tag}>: ${shortenUrl(e.src)}`;
       return `${e.message || e.subtype}`.slice(0, 120);
     }
+    case 'sw_error':
+      return `[SW] ${e.context}: ${e.message}`.slice(0, 120);
     case 'interaction':
       return `${e.action} ${e.target?.tag || ''} ${e.target?.text || ''}`.trim().slice(0, 120);
     case 'memory':
@@ -623,12 +618,13 @@ async function downloadReport() {
     });
 
   // ─── ERROR SUMMARY
-  const errors = eventsArr.filter((e) => e.type === 'error');
+  const errors = eventsArr.filter((e) => e.type === 'error' || e.type === 'sw_error' || (e.type === 'network' && e.subtype === 'webRequest_error'));
   if (errors.length > 0) {
     lines.push(...section('Error Summary (' + errors.length + ' errors)'));
     errors.forEach((e, i) => {
       lines.push(`  [${i + 1}] ${new Date(e.ts).toLocaleString()}`);
-      lines.push(`      Type    : ${e.subtype || 'error'}`);
+      const typeLabel = e.type === 'sw_error' ? 'sw_error:' + e.context : (e.subtype || 'error');
+      lines.push(`      Type    : ${typeLabel}`);
       lines.push(`      Message : ${e.message || '(no message)'}`);
       if (e.filename) lines.push(`      File    : ${e.filename}:${e.lineno}:${e.colno}`);
       if (e.stack)    lines.push(`      Stack   : ${e.stack.slice(0, 300)}`);

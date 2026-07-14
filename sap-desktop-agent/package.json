@@ -1,0 +1,20 @@
+{
+  "name": "bug-monitor-sap-desktop-agent",
+  "version": "1.0.0",
+  "description": "SAP GUI Desktop telemetry collector for Bug Monitor — monitors SAP GUI processes, windows, scripting, logs, and errors",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "start:service": "node main.js --service"
+  },
+  "dependencies": {
+    "active-win": "^8.1.0",
+    "chokidar": "^3.6.0",
+    "screenshot-desktop": "^1.15.0"
+  },
+  "optionalDependencies": {
+    "ffi-napi": "^4.0.3",
+    "ref-napi": "^3.0.3"
+  },
+  "private": true
+}

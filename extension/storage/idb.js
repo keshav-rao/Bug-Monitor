@@ -135,7 +135,7 @@ export async function getRecentEvents(origin, since = Date.now() - 3600000, limi
 }
 
 /** Get events not yet uploaded (no uploadedAt timestamp) */
-export async function getPendingUploadEvents(limit = 500) {
+export async function getPendingUploadEvents(limit = 5000) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EVENTS_STORE, 'readonly');
@@ -144,7 +144,9 @@ export async function getPendingUploadEvents(limit = 500) {
     const pending = [];
     req.onsuccess = (e) => {
       const cursor = e.target.result;
-      if (cursor && pending.length < limit) {
+      // If limit is <= 0 we treat it as "no limit" (return all pending events)
+      const unlimited = !limit || limit <= 0 || !isFinite(limit);
+      if (cursor && (unlimited || pending.length < limit)) {
         if (!cursor.value.uploadedAt) {
           pending.push(cursor.value);
         }

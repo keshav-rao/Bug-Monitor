@@ -1,0 +1,2 @@
+[BugMonitor API] Server running on http://localhost:4000
+[BugMonitor API] Auth: JWT-based with user accounts

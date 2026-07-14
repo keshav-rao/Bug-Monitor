@@ -1,8 +1,10 @@
 "use client";
 
 import React from 'react';
+import { useAuth } from '../layout';
 
 export default function RegisterWebsites() {
+  const authContext = useAuth();
   const [sites, setSites] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [errorMsg, setErrorMsg] = React.useState('');
@@ -16,11 +18,13 @@ export default function RegisterWebsites() {
   // Obfuscation toggles for keys
   const [visibleKeys, setVisibleKeys] = React.useState({});
 
+  const getAuth = () => authContext?.token || localStorage.getItem('bug_monitor_token');
+
   const fetchSites = async () => {
-    const auth = localStorage.getItem('bug_monitor_auth');
+    const auth = getAuth();
     try {
-      const res = await fetch('http://localhost:4000/v1/sites', {
-        headers: { 'x-bug-monitor-auth': auth }
+      const res = await fetch(`${authContext?.api || 'http://localhost:4000'}/v1/sites`, {
+        headers: { 'x-bug-monitor-auth': `Bearer ${auth}` }
       });
       if (res.ok) {
         const data = await res.json();
@@ -29,7 +33,7 @@ export default function RegisterWebsites() {
         setErrorMsg('Failed to load registered sites. Unauthenticated.');
       }
     } catch (err) {
-      setErrorMsg('Cannot communicate with SQLite backend server.');
+      setErrorMsg('Cannot communicate with backend server.');
     } finally {
       setLoading(false);
     }
@@ -49,13 +53,14 @@ export default function RegisterWebsites() {
       return;
     }
 
-    const auth = localStorage.getItem('bug_monitor_auth');
+    const auth = getAuth();
+    const api = authContext?.api || 'http://localhost:4000';
     try {
-      const res = await fetch('http://localhost:4000/v1/sites', {
+      const res = await fetch(`${api}/v1/sites`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-bug-monitor-auth': auth
+          'x-bug-monitor-auth': `Bearer ${auth}`
         },
         body: JSON.stringify({ name, origin })
       });
@@ -65,31 +70,34 @@ export default function RegisterWebsites() {
         setName('');
         setOrigin('');
         fetchSites();
+        if (authContext?.refreshSites) authContext.refreshSites();
       } else {
         const errData = await res.json();
         setFormError(errData.error || 'Failed to register site.');
       }
     } catch (err) {
-      setFormError('Cannot reach local server at port 4000.');
+      setFormError('Cannot reach local server.');
     }
   };
 
   const handleDelete = async (originToDelete) => {
     if (!confirm(`Stop monitoring and delete registration for ${originToDelete}?`)) return;
 
-    const auth = localStorage.getItem('bug_monitor_auth');
+    const auth = getAuth();
+    const api = authContext?.api || 'http://localhost:4000';
     try {
-      const res = await fetch('http://localhost:4000/v1/sites', {
+      const res = await fetch(`${api}/v1/sites`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
-          'x-bug-monitor-auth': auth
+          'x-bug-monitor-auth': `Bearer ${auth}`
         },
         body: JSON.stringify({ origin: originToDelete })
       });
 
       if (res.ok) {
         fetchSites();
+        if (authContext?.refreshSites) authContext.refreshSites();
       } else {
         setErrorMsg('Failed to delete registration.');
       }

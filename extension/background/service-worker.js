@@ -83,24 +83,51 @@ async function initialize() {
 
 initialize();
 
+// ─── SW Error Capture ──────────────────────────────────────────────────────────
+// Captures service-worker-side errors (upload failures, etc.) into IDB so they
+// appear in the popup's live feed and download reports.
+
+function captureSWError(context, err) {
+  const event = {
+    __bugMonitor: true,
+    type: 'sw_error',
+    context,
+    message: err?.message || String(err),
+    stack: err?.stack ? err.stack.slice(0, 1000) : null,
+    ts: Date.now(),
+    origin: 'chrome-extension://bugmonitor-sw',
+    url: `sw://${context}`,
+  };
+  inMemoryBuffer.push(event);
+  saveEvents([event]).catch(() => {});
+  console.error(`[BugMonitor SW] Captured ${context}:`, err?.message || err);
+}
+
 // ─── Alarm Handler ───────────────────────────────────────────────────────────
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === 'upload') {
-    await flushBufferToIDB();
-    await attemptUpload();
-  } else if (alarm.name === 'purge') {
-    const deleted = await purgeOldEvents();
-    if (deleted > 0) console.log(`[BugMonitor SW] Purged ${deleted} old events`);
-  } else if (alarm.name === 'flush_buffer') {
-    await flushBufferToIDB();
+  try {
+    if (alarm.name === 'upload') {
+      await flushBufferToIDB();
+      await attemptUpload();
+    } else if (alarm.name === 'purge') {
+      const deleted = await purgeOldEvents();
+      if (deleted > 0) console.log(`[BugMonitor SW] Purged ${deleted} old events`);
+    } else if (alarm.name === 'flush_buffer') {
+      await flushBufferToIDB();
+    }
+  } catch (err) {
+    captureSWError('alarm_' + alarm.name, err);
   }
 });
 
 // ─── Message Handler ─────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  handleMessage(message, sender).then(sendResponse).catch((err) => sendResponse({ error: err.message }));
+  handleMessage(message, sender).then(sendResponse).catch((err) => {
+    captureSWError('message_handler', err);
+    sendResponse({ error: err.message });
+  });
   return true; // Keep message channel open for async
 });
 
@@ -181,21 +208,25 @@ async function handleTelemetryEvents(events, sender) {
 
   // Check for anomalies — trigger immediate upload on critical events
   const hasCritical = events.some(
-    (e) => e.type === 'error' || (e.type === 'network' && e.ok === false && e.status >= 500)
+    (e) => e.type === 'error' || e.type === 'sw_error' || (e.type === 'network' && e.ok === false && e.status >= 500)
   );
 
   if (hasCritical) {
-    anomalyDetected(events.filter((e) => e.type === 'error' || (e.type === 'network' && e.ok === false)));
+    anomalyDetected(events.filter((e) => e.type === 'error' || e.type === 'sw_error' || (e.type === 'network' && e.ok === false)));
   }
 
   // Flush buffer to IDB immediately for persistence
-  await flushBufferToIDB();
+  try {
+    await flushBufferToIDB();
+  } catch (err) {
+    captureSWError('flush_buffer', err);
+  }
 
   // Trigger live upload (debounced: max once per 2s)
   if (!_liveUploadTimer) {
     _liveUploadTimer = setTimeout(() => {
       _liveUploadTimer = null;
-      attemptUpload(false);
+      attemptUpload(false).catch((err) => captureSWError('live_upload', err));
     }, 2000);
   }
 
@@ -226,12 +257,16 @@ async function flushBufferToIDB() {
     sessionMap[event.sessionId].lastSeen = Math.max(sessionMap[event.sessionId].lastSeen || 0, event.ts);
   }
 
-  await Promise.all([
-    saveEvents(toFlush),
-    ...Object.values(sessionMap).map((s) => upsertSession(s)),
-  ]);
+  try {
+    await Promise.all([
+      saveEvents(toFlush),
+      ...Object.values(sessionMap).map((s) => upsertSession(s)),
+    ]);
+  } catch (err) {
+    captureSWError('idb_flush', err);
+  }
 
-  await setMeta('lastFlush', Date.now());
+  await setMeta('lastFlush', Date.now()).catch(() => {});
   console.log(`[BugMonitor SW] Flushed ${toFlush.length} events to IDB`);
 }
 
@@ -252,7 +287,7 @@ async function attemptUpload(force = false) {
   try {
     console.log(`[BugMonitor SW] Starting upload to: ${config.uploadEndpoint}`);
     
-    const events = await getPendingUploadEvents(500);
+    const events = await getPendingUploadEvents(force ? 0 : 500);
     console.log(`[BugMonitor SW] Found ${events.length} pending events to upload`);
     
     if (events.length === 0) {
@@ -297,7 +332,7 @@ async function attemptUpload(force = false) {
       return { ok: false, status: response.status, error: errorText };
     }
   } catch (err) {
-    console.error('[BugMonitor SW] Upload error:', err.message, err.stack);
+    captureSWError('upload_fetch', err);
     isUploading = false;
     return { ok: false, error: err.message };
   }
@@ -339,7 +374,7 @@ function anomalyDetected(criticalEvents) {
     }).catch(() => { });
 
     // Trigger immediate upload
-    flushBufferToIDB().then(() => attemptUpload(true));
+    flushBufferToIDB().then(() => attemptUpload(true)).catch((err) => captureSWError('anomaly_upload', err));
   }
 }
 

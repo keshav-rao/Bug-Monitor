@@ -1,8 +1,10 @@
 "use client";
 
 import React from 'react';
+import { useAuth } from '../../layout';
 
 export default function SessionTimeline({ params }) {
+  const ctx = useAuth();
   const sessionId = params.id;
   
   const [session, setSession] = React.useState(null);
@@ -15,20 +17,26 @@ export default function SessionTimeline({ params }) {
 
   React.useEffect(() => {
     async function fetchSessionData() {
-      const auth = localStorage.getItem('bug_monitor_auth');
+      const auth = ctx?.token || localStorage.getItem('bug_monitor_token');
       try {
+        const api = ctx?.api || 'http://localhost:4000';
+        const eventsUrl = filter !== 'all'
+          ? `${api}/v1/sessions/${sessionId}/events?type=${encodeURIComponent(filter)}`
+          : `${api}/v1/sessions/${sessionId}/events`;
+
         const [sessionRes, eventsRes] = await Promise.all([
-          fetch(`http://localhost:4000/v1/sessions/${sessionId}`, {
-            headers: { 'x-bug-monitor-auth': auth }
+          fetch(`${api}/v1/sessions/${sessionId}`, {
+            headers: { 'x-bug-monitor-auth': `Bearer ${auth}` }
           }),
-          fetch(`http://localhost:4000/v1/sessions/${sessionId}/events`, {
-            headers: { 'x-bug-monitor-auth': auth }
+          fetch(eventsUrl, {
+            headers: { 'x-bug-monitor-auth': `Bearer ${auth}` }
           })
         ]);
 
         if (sessionRes.ok && eventsRes.ok) {
           const sessionData = await sessionRes.json();
           const eventsData = await eventsRes.json();
+          console.log(`[Frontend] Received ${eventsData?.length || 0} events for filter: ${filter}`);
           setSession(sessionData);
           setEvents(eventsData || []);
         } else {
@@ -41,7 +49,7 @@ export default function SessionTimeline({ params }) {
       }
     }
     fetchSessionData();
-  }, [sessionId]);
+  }, [sessionId, filter]);
 
   const toggleExpand = (id) => {
     setExpandedEvents(prev => ({
@@ -93,48 +101,71 @@ export default function SessionTimeline({ params }) {
       }
       case 'interaction':
         return `${e.action} on ${e.target?.tag || 'element'} ${e.target?.text ? `"${e.target.text.slice(0, 30)}"` : ''}`;
-      case 'memory':
-        return `Memory Check: Heap Used: ${(e.usedJSHeapSize / 1024 / 1024).toFixed(1)}MB / Total: ${(e.totalJSHeapSize / 1024 / 1024).toFixed(1)}MB`;
       case 'storage':
         return `${e.storageType}.${e.action}(${e.key || ''})`;
-      case 'source':
-        return `${e.action}: ${e.src || e.href || e.scriptURL || ''}`;
       case 'lifecycle':
         return `Page state transition: ${e.action} → ${e.url || ''}`;
       case 'dom':
         return `${e.count} DOM mutations observed on element <${e.samples?.[0]?.target?.tag || 'div'}>`;
+      case 'performance':
+        return `Resource: ${e.name || e.url || ''} (${e.duration || 0}ms, ${e.initiatorType || 'unknown'})`;
+      case 'memory':
+        return `Memory: Heap ${(e.usedJSHeapSize / 1024 / 1024).toFixed(1)}MB / ${(e.totalJSHeapSize / 1024 / 1024).toFixed(1)}MB (${e.usedPercent}%)`;
+      case 'source':
+        return `${e.action}: ${e.src || e.href || e.scriptURL || e.url || ''}`;
+      case 'business':
+        return `[${(e.severity || 'info').toUpperCase()}] ${e.eventName}${e.workflowId ? ' (wf:' + e.workflowId + ')' : ''}`;
+      case 'sw_error':
+        return `[SW Error] ${e.context}: ${e.message || ''}`;
       default:
-        return JSON.stringify(e);
+        return JSON.stringify(e).slice(0, 200);
     }
   };
 
-  // Filter & Search logic
-  const filteredEvents = events.filter(e => {
-    // 1. Type Filter
-    let matchesType = true;
+  // Dual filtering: type (server-side via ?type= + client-side safety net) + search
+  const filteredEvents = React.useMemo(() => {
+    let result = events;
+    console.log(`[Frontend Filter] Starting with ${events.length} events, filter: ${filter}`);
+
+    // Helper to determine if an event should be considered an "error-like" event
+    const isErrorLike = (e) => {
+      if (!e) return false;
+      if (e.type === 'error' || e.type === 'sw_error') return true;
+      if (e.level === 'error' || e.ok === false) return true;
+      if (e.type === 'network' && typeof e.subtype === 'string' && e.subtype.includes('error')) return true;
+      // Performance resource entries that indicate failed loads often have zero duration/transfer
+      if (e.type === 'performance' && (e.entryType === 'resource' || (e.initiatorType && e.initiatorType === 'script'))) {
+        if (typeof e.duration === 'number' && e.duration === 0) return true;
+        if (typeof e.transferSize === 'number' && e.transferSize === 0) return true;
+      }
+      return false;
+    };
+
     if (filter !== 'all') {
-      if (filter === 'network') {
-        matchesType = e.type === 'network' || (e.type === 'performance' && e.entryType === 'resource');
-      } else if (filter === 'performance') {
-        matchesType = e.type === 'performance' && e.entryType !== 'resource';
-      } else if (filter === 'error') {
-        matchesType = e.type === 'error' || (e.type === 'network' && e.subtype?.includes('error'));
-      } else {
-        matchesType = e.type === filter;
+      switch (filter) {
+        case 'error':
+          result = result.filter(e => isErrorLike(e));
+          break;
+        default:
+          // Strict type matching
+          result = result.filter(e => e.type === filter);
       }
     }
-    
-    // 2. Search Text
-    let matchesSearch = true;
+
+    console.log(`[Frontend Filter] After type filter: ${result.length} events`);
+
     if (search) {
-      const msg = getFriendlyMessage(e).toLowerCase();
-      const payloadString = JSON.stringify(e).toLowerCase();
       const term = search.toLowerCase();
-      matchesSearch = msg.includes(term) || payloadString.includes(term);
+      result = result.filter(e => {
+        const msg = getFriendlyMessage(e).toLowerCase();
+        const payloadString = JSON.stringify(e).toLowerCase();
+        return msg.includes(term) || payloadString.includes(term);
+      });
+      console.log(`[Frontend Filter] After search filter: ${result.length} events`);
     }
 
-    return matchesType && matchesSearch;
-  });
+    return result;
+  }, [events, filter, search]);
 
   if (loading) {
     return <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)' }}>Reconstructing flight timeline...</div>;
@@ -274,7 +305,7 @@ export default function SessionTimeline({ params }) {
               <div className="card" style={{ padding: '32px' }}>
                 <div className="empty-state">
                   <div className="empty-icon">📡</div>
-                  <div className="empty-text">No timeline events matched the filter filters. Try switching filters or clearing search.</div>
+                  <div className="empty-text">No {filter !== 'all' ? filter : ''} events matched the current filter. Try switching filters or clearing search.</div>
                 </div>
               </div>
             ) : (

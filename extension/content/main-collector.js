@@ -44,6 +44,7 @@
       window.postMessage(
         {
           __bugMonitor: true,
+          sourceType: 'browser',
           sessionId,
           seq: seq(),
           ts: ts(),
