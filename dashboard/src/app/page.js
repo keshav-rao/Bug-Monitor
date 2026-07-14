@@ -14,4 +14,9 @@ export default function Home() {
     }
   }, [ctx?.user]);
 
+  return (
+    <div style={{ padding: '40px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+      Redirecting...
+    </div>
+  );
 }
